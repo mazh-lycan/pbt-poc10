@@ -118,7 +118,7 @@ npx hardhat ignition deploy ignition/modules/Season1byMazh.ts \
 - [ ] Push to `main`.
 - [ ] Settings → Pages → deploy from branch `main`, folder `/ (root)`. The site
   ```
-  lands at `https://mazh-lycan.github.io/pbt-zuki/web/`.
+  lands at `https://mazh-lycan.github.io/pbt-poc10/web/`.
   ```
 - [ ] Open that URL on a desktop browser. With no `#k=` fragment it should say
   ```
@@ -132,7 +132,7 @@ npx hardhat ignition deploy ignition/modules/Season1byMazh.ts \
 - [ ] Write one URI record per tag, matching each chip to its own tag:
 
 ```
-https://mazh-lycan.github.io/pbt-zuki/web/#k=<that chip's private key>
+https://mazh-lycan.github.io/pbt-poc10/web/#k=<that chip's private key>
 ```
 
 - [ ] Do **not** lock the tags or set them read-only. Adding a custom domain
