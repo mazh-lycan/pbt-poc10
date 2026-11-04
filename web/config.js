@@ -1,6 +1,6 @@
 export const config = {
   // Filled in after deploying Season1byMazh to Arbitrum Sepolia.
-  contractAddress: "0x74C88f46fC08248c02bbb02ccDD2574310a45e8E",
+  contractAddress: "0x59CEb01e484A37D695d8D01D3c7aE3c679F5142e",
 
   chainId: 421614,
   chainName: "Arbitrum Sepolia",
