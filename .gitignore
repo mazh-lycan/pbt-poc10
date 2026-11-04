@@ -30,7 +30,7 @@
 # Snapshot cheatcodes output 
 /snapshots
 
-# Chips keys
+# Legacy chip-key file. Keys now live in .env as CHIP_KEY_1 onward.
 chips.md
 
 # Dedicated Pinata gateway (copy from web/config.local.example.js)
