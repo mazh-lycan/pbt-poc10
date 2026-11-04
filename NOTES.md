@@ -15,3 +15,7 @@ The files are already on IPFS. `baseURI` plus the token id points at the metadat
 ## Writing the tags is slow
 
 Each tag is written by hand, one URI at a time. For the next proof of concept, make that step smoother so a set of tags can be prepared without typing each key in separately.
+
+## Claim without a wallet
+
+Claim fails when no wallet is connected. Pressing Claim in that state should send the visitor through Connect first. In Chrome or another browser with no injected wallet, that means the same step Connect already takes: open the page in MetaMask.
