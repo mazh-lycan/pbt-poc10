@@ -1,0 +1,8 @@
+{
+  "name": "Bear",
+  "description": "Proof of Concept Lil Guys. Made by Mazh.",
+  "image": "ipfs://bafybeihreyaqyevk2triea7mfzut6gbzuxgpaiwvzmyoxo73be3it37ncq/1.png",
+  "attributes": [
+    { "trait_type": "Animal", "value": "Bear" }
+  ]
+}
