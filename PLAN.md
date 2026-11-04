@@ -1,7 +1,7 @@
 # Season 1 by Mazh
 
 Working notes for the physical-backed token proof of concept, compiled from the project docs and the code as it stands, plus the run to execute next.
-
+ 
 The contract is `Season1byMazh`. Each physical piece carries an NFC tag. The tag holds a site URL whose fragment contains that piece's private key. The page signs a fresh challenge with the key, and the contract mints the paired token or transfers it. Metadata lives on IPFS. The site is `web/`.
 
 ## What is already live
@@ -16,7 +16,7 @@ Phase 1, the three-piece trial, is deployed on Arbitrum Sepolia (chain id `42161
 | Metadata | `ipfs://bafybeif2nwzgz4frjhyau5o6jyeb6ah4m5agbp4rfrfvyx5ucelz77p35u/` |
 | Images | `ipfs://bafybeihtlvupuxnq4557dquddkckvkpywgubvzb6mfli6gknjivwafgrqu/{1,2,3}.jpg` |
 | Site config | `web/config.js` points at that contract |
-| Pages URL | `https://mazh-lycan.github.io/pbt-zuki/web/` |
+| Pages URL | `https://mazh-lycan.github.io/pbt-poc10/web/` |
 
 `ipfs/3tests/` holds the three metadata files. Character traits are still `TBD`. The ignition module still lists those three trial addresses. Treat that deployment as the throwaway trial. The next run deploys a new contract.
 
@@ -27,7 +27,7 @@ Phase 1, the three-piece trial, is deployed on Arbitrum Sepolia (chain id `42161
 The tag stores one URI record:
 
 ```
-https://mazh-lycan.github.io/pbt-zuki/web/#k=<that chip's private key>
+https://mazh-lycan.github.io/pbt-poc10/web/#k=<that chip's private key>
 ```
 
 The key belongs in the fragment (`#k=`). A fragment stays in the browser: it is not sent to the server, and it does not land in access logs, `Referer` headers, or analytics. `web/chip.js` is the only module that reads the key. Everything else asks it for `address` and `signDigest`. A query-string `?k=` is rewritten back into the fragment, because MetaMask's in-app browser often drops the hash on the way in.
@@ -224,14 +224,14 @@ In `web/config.js` set `contractAddress` to `CONTRACT_ADDRESS`. Leave `chainId` 
 
 `git status` should not list `.env`, and `git check-ignore -v .env` should point at `.gitignore`. Then push `main`. Settings → Pages → deploy from branch `main`, folder `/ (root)`.
 
-Open `https://mazh-lycan.github.io/pbt-zuki/web/` on a desktop browser with no `#k=` fragment. The page should say to scan a Season 1 tag.
+Open `https://mazh-lycan.github.io/pbt-poc10/web/` on a desktop browser with no `#k=` fragment. The page should say to scan a Season 1 tag.
 
 ## 5. Tags and smoke test
 
 Write one URI record per tag, each with its own key from `.env`:
 
 ```
-https://mazh-lycan.github.io/pbt-zuki/web/#k=<CHIP_KEY_n>
+https://mazh-lycan.github.io/pbt-poc10/web/#k=<CHIP_KEY_n>
 ```
 
 Then, in this order:
