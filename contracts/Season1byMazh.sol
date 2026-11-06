@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 import "./pbt/PBTSimple.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 
 
 contract Season1byMazh is PBTSimple, Ownable{
@@ -21,6 +22,9 @@ contract Season1byMazh is PBTSimple, Ownable{
 
     /// @dev The tokenid is not mapped to the read chip address
     error WrongTokenForChip();
+
+    /// @dev This token id has no chip, so it is not part of the season.
+    error TokenNotPaired();
 
     /// @notice Emitted when the base URI is updated
     /// @param baseURI The new base URI
@@ -64,6 +68,14 @@ contract Season1byMazh is PBTSimple, Ownable{
     /// @return The base URI for the PBTs
     function _baseURI() internal view override returns (string memory){
         return baseURI;
+    }
+
+    /// @notice Metadata for a paired token, minted or not.
+    ///         `tokenURI` stays unavailable until mint. The image is pinned
+    ///         with the season, so a collector can see the piece first.
+    function metadataURI(uint256 tokenId) public view returns (string memory) {
+        if (tokenId == 0 || _chipIds[tokenId] == address(0)) revert TokenNotPaired();
+        return string.concat(baseURI, Strings.toString(tokenId));
     }
 
 

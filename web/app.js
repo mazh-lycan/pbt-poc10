@@ -1,501 +1,405 @@
-import { SEASON_ABI } from "./abi.js";
-import { readChipFromUrl } from "./chip.js";
-import { config } from "./config.js";
+import { collections, collectionById } from "./collections.js";
+import { chipFromText } from "./chip.js";
 import {
-  AbiCoder,
-  BrowserProvider,
-  Contract,
-  JsonRpcProvider,
-  hexlify,
-  keccak256,
-  randomBytes,
-} from "./ethers.js";
+  claimPiece,
+  contractFor,
+  describeError,
+  loadCollection,
+  loadPiece,
+  pieceForChip,
+  piecesOwnedBy,
+} from "./chain.js";
+import { scannedItemActions } from "./item-actions.js";
+import { arrangePieces, movePiece, setFeatured } from "./profile.js";
+import { scanChip, scanQr } from "./scan.js";
+import { getAddress } from "./ethers.js";
+import {
+  connectWallet,
+  currentAccount,
+  forgetKeyInAddress,
+  onAccount,
+  short,
+  signerFor,
+} from "./wallet.js";
 
-const NO_EXTRAS = "0x";
+const view = document.querySelector("#view");
+const accountLink = document.querySelector("#account");
+const connectButton = document.querySelector("#connect");
+const statusLine = document.querySelector("#status");
 
-const ui = {
-  status: document.getElementById("status"),
-  artwork: document.getElementById("artwork"),
-  tokenName: document.getElementById("token-name"),
-  tokenDescription: document.getElementById("token-description"),
-  tokenState: document.getElementById("token-state"),
-  verify: document.getElementById("verify"),
-  verifyResult: document.getElementById("verify-result"),
-  connect: document.getElementById("connect"),
-  claim: document.getElementById("claim"),
-};
-
-const readProvider = new JsonRpcProvider(config.rpcUrl, config.chainId);
-const readContract = new Contract(
-  config.contractAddress,
-  SEASON_ABI,
-  readProvider,
-);
-
-let chip = null;
-let tokenId = null;
-let holder = null; // null while the token is unclaimed
-let wallet = null;
-let writeContract = null;
+let editing = false;
+let qrScanner = null;
+let viewGeneration = 0;
 
 function setStatus(text) {
-  ui.status.textContent = text;
+  statusLine.textContent = text ?? "";
 }
 
-function short(address) {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`;
-}
-
-function gatewayUrl(uri) {
-  return uri.startsWith("ipfs://")
-    ? config.ipfsGateway + uri.slice("ipfs://".length)
-    : uri;
-}
-
-function describeError(error) {
-  const decoded = decodeContractError(error);
-  if (decoded !== null) {
-    return (
-      {
-        InvalidSignature:
-          "InvalidSignature (the tag signed a different digest than the chain expected)",
-        SignatureTimestampInFuture:
-          "SignatureTimestampInFuture (wallet clock/RPC was behind the signed timestamp)",
-        SignatureTimestampTooOld: "SignatureTimestampTooOld (took too long to confirm)",
-        NoMappedTokenForChip: "NoMappedTokenForChip",
-      }[decoded] ?? decoded
-    );
+function h(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on") && typeof value === "function") {
+      node.addEventListener(key.slice(2).toLowerCase(), value);
+    } else if (value != null && value !== false) node.setAttribute(key, String(value));
   }
-
-  const nested =
-    error?.info?.error?.message ??
-    error?.error?.message ??
-    error?.data?.message ??
-    error?.shortMessage ??
-    error?.reason ??
-    error?.message;
-
-  if (typeof nested === "string" && nested.length > 0 && nested !== "could not coalesce error") {
-    return nested;
+  for (const child of children.flat()) {
+    if (child == null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
-
-  return String(error);
+  return node;
 }
 
-function decodeContractError(error) {
-  const iface = writeContract?.interface ?? readContract.interface;
-  let current = error;
-
-  for (let depth = 0; depth < 8 && current; depth++) {
-    const candidates = [
-      current.data,
-      current.info?.error?.data,
-      current.error?.data,
-      current.payload?.error?.data,
-    ];
-
-    for (const candidate of candidates) {
-      const hex =
-        typeof candidate === "string"
-          ? candidate
-          : typeof candidate?.data === "string"
-            ? candidate.data
-            : null;
-      if (hex === null || !hex.startsWith("0x") || hex.length < 10) {
-        continue;
-      }
-      try {
-        const parsed = iface.parseError(hex);
-        if (parsed !== null) {
-          return parsed.name;
-        }
-      } catch {
-        // Not a Season1byMazh custom error.
-      }
-    }
-
-    current = current.info?.error ?? current.error ?? current.cause;
+function route() {
+  const parts = (location.hash.replace(/^#/, "") || "/")
+    .split("/")
+    .filter(Boolean)
+    .map(decodeURIComponent);
+  if (parts[0] === "collection" && parts[1]) {
+    return {
+      page: parts[2] ? "piece" : "collection",
+      id: parts[1],
+      tokenId: parts[2] ? Number(parts[2]) : null,
+    };
   }
-
-  return null;
+  if (parts[0] === "collector" && parts[1]) {
+    return { page: "collector", address: parts[1] };
+  }
+  return { page: "home" };
 }
 
-function errorCode(error) {
-  return (
-    error?.code ??
-    error?.error?.code ??
-    error?.data?.originalError?.code ??
-    error?.info?.error?.code
+function sameRoute(snapshot) {
+  const now = route();
+  return now.page === snapshot.page && now.id === snapshot.id && now.tokenId === snapshot.tokenId && now.address === snapshot.address;
+}
+
+function paintAccount() {
+  const account = currentAccount();
+  if (!account) {
+    accountLink.hidden = true;
+    connectButton.hidden = false;
+    return;
+  }
+  connectButton.hidden = true;
+  accountLink.hidden = false;
+  accountLink.textContent = short(account);
+  accountLink.href = `#/collector/${account}`;
+}
+
+async function stopQr() {
+  if (!qrScanner) return;
+  try {
+    await qrScanner.stop();
+  } catch {
+    // The camera is already stopped.
+  }
+  qrScanner = null;
+}
+
+function renderHome() {
+  view.append(
+    h(
+      "div",
+      { class: "banners" },
+      collections.map((collection) =>
+        h(
+          "a",
+          { class: "banner", href: `#/collection/${collection.id}` },
+          h("img", { src: collection.banner, alt: "" }),
+          h("span", {}, collection.name),
+        ),
+      ),
+    ),
   );
 }
 
-function getEthereum() {
-  const ethereum = window.ethereum;
-  if (ethereum === undefined) {
-    return undefined;
+async function renderCollection(id) {
+  const here = route();
+  const collection = collectionById(id);
+  if (!collection) {
+    view.append(h("p", {}, "That collection is not part of Mazh Seasons."));
+    return;
   }
-  if (Array.isArray(ethereum.providers)) {
-    return (
-      ethereum.providers.find((provider) => provider.isMetaMask) ??
-      ethereum.providers[0]
-    );
+  view.append(
+    h("img", { class: "hero", src: collection.banner, alt: "" }),
+    h("h1", {}, collection.name),
+  );
+  if (!collection.contractAddress) {
+    view.append(h("p", { class: "quiet" }, "No pieces published yet."));
+    return;
   }
-  return ethereum;
+  setStatus("Loading the collection…");
+  try {
+    const pieces = await loadCollection(collection);
+    if (!sameRoute(here)) return;
+    setStatus("");
+    view.append(h("div", { class: "grid" }, pieces.map(pieceCard)));
+  } catch (error) {
+    setStatus(describeError(error));
+  }
 }
 
-function waitForEthereum(ms = 2500) {
-  const existing = getEthereum();
-  if (existing !== undefined) {
-    return Promise.resolve(existing);
-  }
+function pieceCard(piece) {
+  return h(
+    "a",
+    { class: "card", href: `#/collection/${piece.collectionId}/${piece.tokenId}` },
+    h("img", { src: piece.image, alt: piece.name }),
+    h("strong", {}, piece.name),
+  );
+}
 
-  return new Promise((resolve) => {
-    const finish = () => {
-      window.removeEventListener("ethereum#initialized", finish);
-      clearTimeout(timer);
-      resolve(getEthereum());
-    };
-    const timer = setTimeout(finish, ms);
-    window.addEventListener("ethereum#initialized", finish);
+async function renderPiece(id, tokenId) {
+  const here = route();
+  const collection = collectionById(id);
+  if (!collection?.contractAddress || !Number.isInteger(tokenId)) {
+    view.append(h("p", {}, "That piece is not published."));
+    return;
+  }
+  setStatus("Loading the piece…");
+  try {
+    const piece = await loadPiece(collection, tokenId);
+    if (!sameRoute(here)) return;
+    setStatus("");
+    const owner = piece.holder
+      ? h("a", { href: `#/collector/${piece.holder}` }, short(piece.holder))
+      : "Unclaimed";
+    view.append(
+      h("img", { class: "hero", src: piece.image, alt: piece.name }),
+      h("h1", {}, piece.name),
+      h("p", {}, piece.description),
+      h("p", { class: "quiet" }, "Held by ", owner),
+      h("p", {}, h("a", { href: `#/collection/${collection.id}` }, collection.name)),
+    );
+  } catch (error) {
+    setStatus(describeError(error));
+  }
+}
+
+function addItemPanel() {
+  const found = h("div");
+  const qr = h("div", { id: "qr-reader" });
+  const panel = h(
+    "div",
+    { class: "actions" },
+    h("button", { type: "button", onClick: () => readTag(found) }, "Add item"),
+    h("button", { type: "button", onClick: () => readQr(qr, found) }, "Scan QR"),
+  );
+  return h("section", {}, panel, qr, found);
+}
+
+async function readTag(found) {
+  const generation = viewGeneration;
+  await stopQr();
+  await scanChip({
+    onStatus: setStatus,
+    onKey: (chip) => {
+      if (generation !== viewGeneration) return;
+      showScanned(found, chip);
+    },
   });
 }
 
-function chainIdHex() {
-  // QUANTITY encoding: no leading zeros. 421614 → 0x66eee. A padded value
-  // such as 0x066eee is rejected by MetaMask mobile.
-  return `0x${config.chainId.toString(16)}`;
-}
-
-function sameChain(left, right) {
-  return BigInt(left) === BigInt(right);
-}
-
-async function claimTxOverrides(provider) {
-  const [feeData, block] = await Promise.all([
-    provider.getFeeData(),
-    provider.getBlock("latest"),
-  ]);
-  const baseFee = block.baseFeePerGas ?? 0n;
-  const suggested = feeData.maxFeePerGas ?? baseFee;
-  // Arbitrum Sepolia's base fee moves between estimate and send. MetaMask's
-  // default then lands a few million wei under the new base fee (258724000
-  // vs 260594000). Double it and add the same ~0.01 gwei bump used in MM.
-  const maxFeePerGas =
-    (suggested > baseFee ? suggested : baseFee) * 2n + 10_000_000n;
-  let maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ?? 0n;
-  if (maxPriorityFeePerGas > maxFeePerGas) {
-    maxPriorityFeePerGas = maxFeePerGas;
-  }
-
-  return { maxFeePerGas, maxPriorityFeePerGas, block };
-}
-
-function metamaskDappUrl() {
-  const url = new URL(window.location.href);
-  const key =
-    new URLSearchParams(url.hash.slice(1)).get("k") ?? url.searchParams.get("k");
-  if (key !== null) {
-    url.searchParams.set("k", key);
-  }
-  return `https://metamask.app.link/dapp/${url.host}${url.pathname}${url.search}${url.hash}`;
-}
-
-function showPlaceholder(alt = "Unclaimed artwork") {
-  ui.artwork.removeAttribute("data-state");
-  ui.artwork.alt = alt;
-  ui.artwork.src = config.placeholderImage;
-}
-
-function showArtwork(src, alt) {
-  ui.artwork.dataset.state = "loading";
-  ui.artwork.alt = alt;
-  ui.artwork.onerror = () => {
-    ui.artwork.onerror = null;
-    showPlaceholder(alt);
-    ui.tokenState.textContent =
-      `${ui.tokenState.textContent} Artwork failed to load.`;
-  };
-  ui.artwork.onload = () => {
-    ui.artwork.onload = null;
-    ui.artwork.removeAttribute("data-state");
-  };
-  ui.artwork.src = src;
-}
-
-async function loadHolderAndArtwork() {
+async function readQr(qr, found) {
+  const generation = viewGeneration;
+  await stopQr();
+  setStatus("Allow the camera, then point it at the QR code.");
   try {
-    holder = await readContract.ownerOf(tokenId);
-  } catch {
-    // ownerOf reverts for an unminted token, which is how the page knows the
-    // token is still unclaimed.
-    holder = null;
-  }
-
-  if (holder === null) {
-    ui.tokenName.textContent = `Season1byMazh #${tokenId}`;
-    ui.tokenDescription.textContent = "";
-    ui.tokenState.textContent = "Unclaimed. The artwork is revealed on mint.";
-    showPlaceholder();
-    return;
-  }
-
-  ui.tokenState.textContent = `Held by ${short(holder)}. Loading artwork…`;
-  showPlaceholder("Loading artwork");
-
-  try {
-    const response = await fetch(gatewayUrl(await readContract.tokenURI(tokenId)));
-    if (!response.ok) {
-      throw new Error(`metadata ${response.status}`);
-    }
-    const metadata = await response.json();
-    const name = metadata.name ?? `Season1byMazh #${tokenId}`;
-    ui.tokenName.textContent = name;
-    ui.tokenDescription.textContent = metadata.description ?? "";
-    ui.tokenState.textContent = `Held by ${short(holder)}`;
-    showArtwork(gatewayUrl(metadata.image), name);
+    qrScanner = await scanQr({
+      elementId: "qr-reader",
+      onKey: (chip) => {
+        if (generation !== viewGeneration) return;
+        showScanned(found, chip);
+      },
+    });
   } catch (error) {
-    ui.tokenName.textContent = `Season1byMazh #${tokenId}`;
-    ui.tokenDescription.textContent = "";
-    ui.tokenState.textContent = `Held by ${short(holder)}. Could not load metadata: ${describeError(error)}`;
-    showPlaceholder(`Season1byMazh #${tokenId}`);
-  }
-}
-
-function refreshClaimButton() {
-  if (wallet === null) {
-    ui.claim.hidden = true;
-    return;
-  }
-
-  ui.claim.hidden = false;
-
-  if (holder !== null && holder.toLowerCase() === wallet.toLowerCase()) {
-    ui.claim.textContent = "You already hold this token";
-    ui.claim.disabled = true;
-    return;
-  }
-
-  ui.claim.disabled = false;
-  ui.claim.textContent =
-    holder === null ? "Claim to my wallet" : "Transfer to my wallet";
-}
-
-async function verify() {
-  ui.verify.disabled = true;
-  ui.verifyResult.dataset.state = "pending";
-  ui.verifyResult.textContent = "Challenging the tag…";
-
-  try {
-    // A fresh challenge every time, so what the page shows is a live answer
-    // from the tag rather than a signature someone could have recorded.
-    const challenge = hexlify(randomBytes(32));
-    const signature = await chip.signDigest(keccak256(challenge));
-    const genuine = await readContract.isChipSignatureForToken(
-      tokenId,
-      challenge,
-      signature,
+    setStatus(
+      error?.name === "NotAllowedError"
+        ? "Camera permission was denied."
+        : describeError(error),
     );
-
-    ui.verifyResult.dataset.state = genuine ? "ok" : "bad";
-    ui.verifyResult.textContent = genuine
-      ? `Genuine. This tag holds the key for #${tokenId}.`
-      : "Not genuine. This tag did not sign for this token.";
-  } catch (error) {
-    ui.verifyResult.dataset.state = "bad";
-    ui.verifyResult.textContent = `Could not verify: ${describeError(error)}`;
-  } finally {
-    ui.verify.disabled = false;
   }
 }
 
-async function connect() {
-  const ethereum = await waitForEthereum();
-
-  if (ethereum === undefined) {
-    // System browsers have no injected provider. Deep-link into MetaMask's
-    // in-app browser, duplicating the key as ?k= because that WebView often
-    // drops the fragment.
-    setStatus("Opening in MetaMask…");
-    window.location.href = metamaskDappUrl();
-    return;
-  }
-
-  ui.connect.disabled = true;
-  setStatus("Requesting the selected account…");
-
+async function showScanned(found, chip) {
+  setStatus("Looking up the piece…");
+  found.replaceChildren();
   try {
-    const accounts = await ethereum.request({ method: "eth_requestAccounts" });
-    if (!Array.isArray(accounts) || accounts.length === 0) {
-      throw new Error("No account selected in MetaMask.");
+    const piece = await pieceForChip(chip);
+    if (!piece) {
+      setStatus("This key is not part of a Mazh collection.");
+      return;
     }
-
-    const wanted = chainIdHex();
-    const current = await ethereum.request({ method: "eth_chainId" });
-    if (!sameChain(current, wanted)) {
-      try {
-        await ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: wanted }],
-        });
-      } catch (error) {
-        const code = errorCode(error);
-        if (code !== 4902 && code !== -32603) throw error;
-        await ethereum.request({
-          method: "wallet_addEthereumChain",
-          params: [
-            {
-              chainId: wanted,
-              chainName: config.chainName,
-              rpcUrls: ["https://sepolia-rollup.arbitrum.io/rpc"],
-              nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-              blockExplorerUrls: [config.explorerUrl],
-            },
-          ],
-        });
-      }
-    }
-
-    const provider = new BrowserProvider(ethereum);
-    const signer = await provider.getSigner(accounts[0]);
-    wallet = await signer.getAddress();
-    writeContract = new Contract(config.contractAddress, SEASON_ABI, signer);
-
-    ethereum.removeAllListeners?.("accountsChanged");
-    ethereum.removeAllListeners?.("chainChanged");
-    ethereum.on?.("accountsChanged", () => {
-      wallet = null;
-      writeContract = null;
-      ui.connect.textContent = "Connect wallet";
-      refreshClaimButton();
-      setStatus("Account changed. Connect again.");
-    });
-    ethereum.on?.("chainChanged", () => {
-      wallet = null;
-      writeContract = null;
-      ui.connect.textContent = "Connect wallet";
-      refreshClaimButton();
-      setStatus("Network changed. Connect again.");
-    });
-
-    ui.connect.textContent = `Connected ${short(wallet)}`;
-    refreshClaimButton();
-    setStatus("Wallet connected.");
-  } catch (error) {
-    const code = errorCode(error);
-    if (code === 4001) {
-      setStatus("Connection rejected in MetaMask.");
-    } else {
-      setStatus(`Wallet connection failed: ${describeError(error)}`);
-    }
-  } finally {
-    ui.connect.disabled = false;
-  }
-}
-
-async function claim() {
-  ui.claim.disabled = true;
-
-  try {
-    setStatus("Asking the tag to sign for your address…");
-
-    // Use MetaMask's RPC for the clock and nonce. dRPC can be a few seconds
-    // ahead of the node that mines the tx, which reverts as
-    // SignatureTimestampInFuture and surfaces as ethers' "could not coalesce".
-    const walletProvider = writeContract.runner.provider;
-    const nonce = await writeContract.chipNonce(chip.address);
-    const fee = await claimTxOverrides(walletProvider);
-    const signatureTimestamp = BigInt(fee.block.timestamp) - 15n;
-
-    const digest = keccak256(
-      AbiCoder.defaultAbiCoder().encode(
-        ["address", "uint256", "bytes32", "address", "uint256", "bytes32"],
-        [
-          config.contractAddress,
-          BigInt(config.chainId),
-          nonce,
-          wallet,
-          signatureTimestamp,
-          keccak256(NO_EXTRAS),
-        ],
+    setStatus("");
+    const viewer = currentAccount();
+    const actions = scannedItemActions({ holder: piece.holder, viewer });
+    found.append(
+      h(
+        "div",
+        { class: "scan-result" },
+        h("img", { src: piece.image, alt: piece.name }),
+        h(
+          "div",
+          {},
+          h("strong", {}, piece.name),
+          h("p", {}, piece.description),
+          h(
+            "p",
+            { class: "quiet" },
+            piece.holder ? `Held by ${short(piece.holder)}` : "Unclaimed",
+          ),
+          h(
+            "div",
+            { class: "actions" },
+            actions.map((action) =>
+              h(
+                "button",
+                {
+                  type: "button",
+                  onClick: () => runAction(action.id, piece, chip, found),
+                },
+                action.label,
+              ),
+            ),
+          ),
+        ),
       ),
     );
-    const signature = await chip.signDigest(digest);
-    const args =
-      holder === null
-        ? [wallet, chip.address, signature, signatureTimestamp, NO_EXTRAS]
-        : [wallet, chip.address, signature, signatureTimestamp, false, NO_EXTRAS];
-    const method = holder === null ? "mint" : "transferToken";
-    const txOverrides = {
-      maxFeePerGas: fee.maxFeePerGas,
-      maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
-    };
-
-    setStatus("Checking the claim will succeed…");
-    await writeContract[method].staticCall(...args);
-    try {
-      const estimated = await writeContract[method].estimateGas(...args);
-      txOverrides.gasLimit = (estimated * 130n) / 100n;
-    } catch {
-      txOverrides.gasLimit = 500_000n;
-    }
-
-    setStatus("Confirm the transaction in your wallet…");
-    const transaction = await writeContract[method](...args, txOverrides);
-
-    setStatus("Waiting for the transaction…");
-    await transaction.wait();
-
-    await loadHolderAndArtwork();
-    refreshClaimButton();
-    setStatus("Done. The token is yours.");
   } catch (error) {
-    const code = errorCode(error);
-    if (code === 4001) {
-      setStatus("Claim rejected in MetaMask.");
-    } else {
-      setStatus(`Claim failed: ${describeError(error)}`);
-    }
-    refreshClaimButton();
+    setStatus(describeError(error));
   }
 }
 
-async function start() {
-  ui.verify.addEventListener("click", verify);
-  ui.connect.addEventListener("click", connect);
-  ui.claim.addEventListener("click", claim);
-
+async function runAction(id, piece, chip, found) {
+  if (id !== "claim") return;
+  const viewer = currentAccount();
+  if (!viewer) return;
+  setStatus("Confirm the transaction in MetaMask.");
   try {
-    chip = readChipFromUrl();
-  } catch {
-    setStatus("This tag's key is malformed.");
-    return;
-  }
-
-  if (chip === null) {
-    setStatus("Scan a Season 1 tag to open its token.");
-    return;
-  }
-
-  setStatus("Looking up the tag…");
-
-  try {
-    tokenId = await readContract.tokenIdFor(chip.address);
+    const signed = await signerFor((signer) => contractFor(piece.collectionId, signer));
+    await claimPiece({
+      signerContract: signed,
+      chip,
+      to: viewer,
+      holder: piece.holder,
+    });
+    setStatus("The piece is in your wallet.");
+    found.replaceChildren();
+    editing = false;
+    render();
   } catch (error) {
-    setStatus(`This tag is not part of Season 1. (${describeError(error)})`);
+    const code = error?.code ?? error?.error?.code;
+    setStatus(code === 4001 ? "Claim rejected in MetaMask." : describeError(error));
+  }
+}
+
+async function renderCollector(address) {
+  const here = route();
+  let checksum;
+  try {
+    checksum = getAddress(address);
+  } catch {
+    view.append(h("p", {}, "That is not a collector address."));
     return;
   }
+  const mine = currentAccount()?.toLowerCase() === checksum.toLowerCase();
+  view.append(h("h1", {}, mine ? "Your collection" : "Collector"));
+  view.append(h("p", { class: "quiet" }, checksum));
+  if (mine) {
+    view.append(addItemPanel());
+    view.append(
+      h(
+        "button",
+        {
+          type: "button",
+          onClick: () => {
+            editing = !editing;
+            render();
+          },
+        },
+        editing ? "Done" : "Edit profile",
+      ),
+    );
+  }
 
-  ui.tokenName.textContent = `Season1byMazh #${tokenId}`;
-  await loadHolderAndArtwork();
+  setStatus("Loading pieces…");
+  try {
+    const owned = await piecesOwnedBy(checksum);
+    if (!sameRoute(here)) return;
+    setStatus("");
+    const ordered = arrangePieces(checksum, owned);
+    if (ordered.length === 0) {
+      view.append(h("p", {}, "No Mazh pieces in this wallet yet."));
+      return;
+    }
+    view.append(
+      h(
+        "div",
+        { class: "grid" },
+        ordered.map((piece, index) => ownedCard(piece, checksum, owned, mine, index === 0)),
+      ),
+    );
+  } catch (error) {
+    setStatus(describeError(error));
+  }
+}
 
-  ui.verify.hidden = false;
-  ui.connect.hidden = false;
-  const ethereum = await waitForEthereum(800);
-  setStatus(
-    ethereum === undefined
-      ? "Ready. Connect opens MetaMask."
-      : "Ready. Tap Connect wallet and approve the selected account.",
+function ownedCard(piece, address, owned, mine, isMain) {
+  const body = [
+    h("img", { src: piece.image, alt: piece.name }),
+    h("strong", {}, piece.name),
+  ];
+  if (mine && editing) {
+    body.push(
+      h(
+        "div",
+        { class: "row" },
+        h("button", { type: "button", onClick: () => {
+          setFeatured(address, owned, piece);
+          render();
+        } }, "Set as main"),
+        h("button", { type: "button", onClick: () => {
+          movePiece(address, owned, piece, -1);
+          render();
+        } }, "Up"),
+        h("button", { type: "button", onClick: () => {
+          movePiece(address, owned, piece, 1);
+          render();
+        } }, "Down"),
+      ),
+    );
+    return h("article", { class: isMain ? "owned main-piece" : "owned" }, body);
+  }
+  return h(
+    "a",
+    {
+      class: isMain ? "card main-piece" : "card",
+      href: `#/collection/${piece.collectionId}/${piece.tokenId}`,
+    },
+    body,
   );
 }
 
-start();
+async function render() {
+  viewGeneration += 1;
+  await stopQr();
+  if (route().page !== "collector") editing = false;
+  paintAccount();
+  view.replaceChildren();
+  setStatus("");
+  const current = route();
+  if (current.page === "collection") return renderCollection(current.id);
+  if (current.page === "piece") return renderPiece(current.id, current.tokenId);
+  if (current.page === "collector") return renderCollector(current.address);
+  renderHome();
+}
+
+forgetKeyInAddress();
+connectButton.addEventListener("click", () => {
+  connectWallet().catch((error) => {
+    const code = error?.code ?? error?.error?.code;
+    setStatus(code === 4001 ? "Connection rejected in MetaMask." : describeError(error));
+  });
+});
+onAccount(() => render());
+window.addEventListener("hashchange", () => render());
+render();

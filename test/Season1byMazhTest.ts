@@ -829,6 +829,25 @@ describe("Season1byMazh", async function () {
       );
     });
 
+    it("serves metadata for a paired token before it is minted", async function () {
+      const season = await deployPairedTo([newChip()]);
+
+      assert.equal(
+        await season.read.metadataURI([PAIRED_TOKEN_IDS[0]]),
+        `${BASE_URI}1`,
+      );
+    });
+
+    it("refuses metadata for a token id that was never paired", async function () {
+      const season = await deployPairedTo([newChip()]);
+
+      await viem.assertions.revertWithCustomError(
+        season.read.metadataURI([9999n]),
+        season,
+        "TokenNotPaired",
+      );
+    });
+
     it("has no metadata for a token id that was never paired", async function () {
       const season = await deployPairedTo([newChip()]);
 

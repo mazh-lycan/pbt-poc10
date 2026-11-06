@@ -1,54 +1,164 @@
+:root {
+  color: #1a1a1a;
+  background: #f6f3ee;
+  font-family: Georgia, "Iowan Old Style", serif;
+}
+
 body {
-    font-family: system-ui, sans-serif;
-    max-width: 26rem;
-    margin: 0 auto;
-    padding: 1.5rem 1rem 3rem;
-    line-height: 1.5;
-  }
+  margin: 0 auto;
+  max-width: 64rem;
+  padding: 0 1.25rem 4rem;
+  line-height: 1.45;
+}
 
-  img {
-    display: block;
-    width: 100%;
-    aspect-ratio: 1;
-    object-fit: cover;
-    background: #eee;
-    border-radius: 0.5rem;
-  }
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 0;
+  position: sticky;
+  top: 0;
+  background: #f6f3ee;
+}
 
-  button {
-    display: block;
-    width: 100%;
-    padding: 0.85rem;
-    margin-top: 0.75rem;
-    font: inherit;
-    border: 1px solid #333;
-    border-radius: 0.5rem;
-    background: #fff;
-  }
+.brand {
+  color: inherit;
+  font-size: 1.05rem;
+  letter-spacing: 0.14em;
+  text-decoration: none;
+}
 
-  button:disabled {
-    opacity: 0.5;
-  }
+button,
+.header-link {
+  font: inherit;
+  border: 1px solid #1a1a1a;
+  background: transparent;
+  padding: 0.45rem 0.8rem;
+  cursor: pointer;
+  color: inherit;
+  text-decoration: none;
+}
 
-  #status,
-  #token-state,
-  #token-description {
-    color: #666;
-    font-size: 0.9rem;
-  }
+button:disabled {
+  opacity: 0.45;
+}
 
-  #token-description {
-    margin-top: 0;
-  }
+.banners {
+  display: grid;
+  gap: 1rem;
+}
 
-  img[data-state="loading"] {
-    opacity: 0.55;
-  }
+.banner {
+  position: relative;
+  display: block;
+  color: #fff;
+  text-decoration: none;
+}
 
-  #verify-result[data-state="ok"] {
-    color: #197a35;
-  }
+.banner img,
+.hero {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #ddd;
+}
 
-  #verify-result[data-state="bad"] {
-    color: #a11;
+.banner span {
+  position: absolute;
+  left: 1rem;
+  bottom: 1rem;
+  font-size: 2rem;
+  letter-spacing: 0.04em;
+}
+
+h1 {
+  font-weight: normal;
+  font-size: 2rem;
+  margin: 1rem 0 0.4rem;
+}
+
+.quiet {
+  color: #555;
+}
+
+a {
+  color: inherit;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+@media (min-width: 800px) {
+  .grid {
+    grid-template-columns: repeat(4, 1fr);
   }
+}
+
+.card {
+  display: block;
+  text-decoration: none;
+}
+
+.card img,
+.owned img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #ddd;
+}
+
+.card strong,
+.owned strong {
+  display: block;
+  margin-top: 0.4rem;
+  font-weight: normal;
+}
+
+.main-piece {
+  grid-column: 1 / -1;
+}
+
+.owned .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+#qr-reader {
+  margin-top: 0.75rem;
+}
+
+.scan-result {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+  align-items: start;
+}
+
+.scan-result img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #ddd;
+}
+
+#status {
+  color: #555;
+  min-height: 1.2rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}

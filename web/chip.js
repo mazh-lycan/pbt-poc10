@@ -1,42 +1,31 @@
 import { Wallet, getBytes } from "./ethers.js";
 
-// The only seam that knows how a chip signs. For the PoC the key travels in the
-// URL fragment, which means the page can sign whenever it likes. A real Arx
-// chip keeps its key on-die and answers a challenge over NFC, so replacing this
-// module with a libhalo-backed one should be the whole migration: everything
-// else only ever calls `address` and `signDigest`.
-//
-// The fragment is used rather than a query string because it is never sent to
-// the server, so the key stays out of access logs, Referer headers and
-// analytics.
-export function readChipFromUrl() {
-  const hashParams = new URLSearchParams(window.location.hash.slice(1));
-  const queryParams = new URLSearchParams(window.location.search);
-  const privateKey = hashParams.get("k") ?? queryParams.get("k");
+// A tag or QR code carries the chip private key and nothing else.
+// The key stays in memory for the claim. It is never written into the URL.
+const KEY = /(?:0x)?([0-9a-fA-F]{64})/;
 
-  if (privateKey === null) {
+export function chipFromText(text) {
+  const match = KEY.exec(String(text ?? ""));
+  if (!match) return null;
+
+  try {
+    const wallet = new Wallet(`0x${match[1]}`);
+    return {
+      address: wallet.address,
+      signDigest(digest) {
+        return wallet.signMessage(getBytes(digest));
+      },
+    };
+  } catch {
     return null;
   }
+}
 
-  // Query strings hit server logs; MetaMask's in-app browser often drops the
-  // fragment, so the deep link may arrive as ?k=. Move it back to the hash.
-  if (queryParams.has("k")) {
-    queryParams.delete("k");
-    const search = queryParams.toString();
-    const url = `${window.location.pathname}${search ? `?${search}` : ""}#k=${privateKey}`;
-    window.history.replaceState(null, "", url);
+export function textFromNdefRecord(record) {
+  const bytes = new Uint8Array(record.data.buffer, record.data.byteOffset, record.data.byteLength);
+  if (record.recordType === "text") {
+    const languageLength = bytes[0] & 0x3f;
+    return new TextDecoder().decode(bytes.slice(1 + languageLength));
   }
-
-  const wallet = new Wallet(privateKey);
-
-  return {
-    address: wallet.address,
-
-    // `digest` is already the 32 bytes the contract hashes; signMessage wraps
-    // it in the EIP-191 prefix, which is what ECDSA.toEthSignedMessageHash
-    // expects on the other side.
-    async signDigest(digest) {
-      return wallet.signMessage(getBytes(digest));
-    },
-  };
+  return new TextDecoder().decode(bytes);
 }
