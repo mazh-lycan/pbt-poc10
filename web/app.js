@@ -317,22 +317,36 @@ async function renderHandoff(id, address) {
     h("h1", {}, "Add this piece"),
     h("p", {}, "It will go to"),
     h("p", { class: "quiet" }, to),
-    h("p", {}, "Hold the tag against the phone."),
+    h("p", {}, "NDEFReader" in window
+      ? "Press Scan NFC, then hold the tag against the phone."
+      : "This phone reads the QR code on the piece."),
     h(
       "div",
       { class: "actions" },
+      "NDEFReader" in window
+        ? h("button", {
+            type: "button",
+            onClick: (event) => readNfc(event.currentTarget, found, id, to),
+          }, "Scan NFC")
+        : null,
       h("button", { type: "button", onClick: () => readPieceQr(qr, found, id, to) }, "Scan the piece QR"),
     ),
     qr,
     found,
   );
+}
+
+function readNfc(button, found, id, to) {
   const generation = viewGeneration;
-  await scanChip({
+  button.disabled = true;
+  scanChip({
     onStatus: setStatus,
     onKey: (chip) => {
       if (generation !== viewGeneration) return;
       offerSend(found, id, to, chip);
     },
+  }).then((result) => {
+    if (result !== "started") button.disabled = false;
   });
 }
 
