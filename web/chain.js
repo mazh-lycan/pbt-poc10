@@ -3,7 +3,9 @@ import {
   AbiCoder,
   Contract,
   JsonRpcProvider,
+  getBytes,
   keccak256,
+  verifyMessage,
 } from "./ethers.js";
 import { config } from "./config.js";
 import { collectionById, collectionsWithContract } from "./collections.js";
@@ -167,29 +169,56 @@ async function claimTxOverrides(provider) {
   return { maxFeePerGas, maxPriorityFeePerGas, block };
 }
 
-export async function claimPiece({ signerContract, chip, to, holder }) {
-  const provider = signerContract.runner.provider;
-  const nonce = await signerContract.chipNonce(chip.address);
-  const fee = await claimTxOverrides(provider);
-  const signatureTimestamp = BigInt(fee.block.timestamp) - 15n;
-  const network = await provider.getNetwork();
+// The phone signs this digest. The laptop rebuilds it with the same timestamp
+// and asks MetaMask to submit. The key never crosses the mailbox.
+export async function claimDigest({ collectionId, chipAddress, to, signatureTimestamp }) {
+  const contract = contractFor(collectionId);
+  const nonce = await paced(() => contract.chipNonce(chipAddress));
+  let timestamp = signatureTimestamp;
+  if (timestamp == null) {
+    const block = await paced(() => readProvider.getBlock("latest"));
+    timestamp = BigInt(block.timestamp) - 15n;
+  } else {
+    timestamp = BigInt(timestamp);
+  }
   const digest = keccak256(
     AbiCoder.defaultAbiCoder().encode(
       ["address", "uint256", "bytes32", "address", "uint256", "bytes32"],
       [
-        await signerContract.getAddress(),
-        network.chainId,
+        await contract.getAddress(),
+        BigInt(config.chainId),
         nonce,
         to,
-        signatureTimestamp,
+        timestamp,
         keccak256(NO_EXTRAS),
       ],
     ),
   );
-  const signature = await chip.signDigest(digest);
+  return { digest, signatureTimestamp: timestamp };
+}
+
+export function chipSigned(digest, signature, chipAddress) {
+  try {
+    return verifyMessage(getBytes(digest), signature).toLowerCase() === chipAddress.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+export async function submitClaim({
+  signerContract,
+  chipAddress,
+  to,
+  holder,
+  signature,
+  signatureTimestamp,
+}) {
+  const provider = signerContract.runner.provider;
+  const fee = await claimTxOverrides(provider);
+  const timestamp = BigInt(signatureTimestamp);
   const args = holder
-    ? [to, chip.address, signature, signatureTimestamp, false, NO_EXTRAS]
-    : [to, chip.address, signature, signatureTimestamp, NO_EXTRAS];
+    ? [to, chipAddress, signature, timestamp, false, NO_EXTRAS]
+    : [to, chipAddress, signature, timestamp, NO_EXTRAS];
   const method = holder ? "transferToken" : "mint";
   const txOverrides = {
     maxFeePerGas: fee.maxFeePerGas,

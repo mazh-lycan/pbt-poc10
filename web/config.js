@@ -11,6 +11,9 @@ export const config = {
   // This is the public Arbitrum Sepolia endpoint, the same one MetaMask adds.
   rpcUrl: "https://sepolia-rollup.arbitrum.io/rpc",
 
+  // Phone posts the chip signature here. Laptop polls it. The chip key never is sent.
+  mailboxUrl: "https://mazhcollections.com/api/sessions",
+
   // Browsers cannot fetch ipfs:// directly. The public Pinata gateway is the
   // committed default; a dedicated gateway belongs in gitignored config.local.js.
   ipfsGateway: "https://gateway.pinata.cloud/ipfs/",

@@ -1,17 +1,19 @@
 import { collections, collectionById } from "./collections.js";
-import { chipFromText } from "./chip.js";
 import {
-  claimPiece,
+  chipSigned,
+  claimDigest,
   contractFor,
   describeError,
   loadCollection,
   loadPiece,
   pieceForChip,
   piecesOwnedBy,
+  submitClaim,
 } from "./chain.js";
 import { scannedItemActions } from "./item-actions.js";
 import { arrangePieces, movePiece, setFeatured } from "./profile.js";
 import { scanChip, scanQr } from "./scan.js";
+import { getSession, handoffUrl, newSessionId, putSession } from "./session.js";
 import { getAddress } from "./ethers.js";
 import {
   connectWallet,
@@ -30,6 +32,7 @@ const statusLine = document.querySelector("#status");
 let editing = false;
 let qrScanner = null;
 let viewGeneration = 0;
+let handoffTicket = 0;
 
 function setStatus(text) {
   statusLine.textContent = text ?? "";
@@ -64,6 +67,9 @@ function route() {
   }
   if (parts[0] === "collector" && parts[1]) {
     return { page: "collector", address: parts[1] };
+  }
+  if (parts[0] === "handoff" && parts[1] && parts[2]) {
+    return { page: "handoff", id: parts[1], address: parts[2] };
   }
   return { page: "home" };
 }
@@ -176,39 +182,170 @@ async function renderPiece(id, tokenId) {
 }
 
 function addItemPanel() {
-  const found = h("div");
-  const qr = h("div", { id: "qr-reader" });
-  const panel = h(
-    "div",
-    { class: "actions" },
-    h("button", { type: "button", onClick: () => readTag(found) }, "Add item"),
-    h("button", { type: "button", onClick: () => readQr(qr, found) }, "Scan QR"),
+  const box = h("div");
+  return h(
+    "section",
+    {},
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { type: "button", onClick: () => startHandoff(box) }, "Add item"),
+    ),
+    box,
   );
-  return h("section", {}, panel, qr, found);
 }
 
-async function readTag(found) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function drawQr(url) {
+  const canvas = h("canvas", { class: "handoff-qr" });
+  const { default: QRCode } = await import(
+    "https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm"
+  );
+  await QRCode.toCanvas(canvas, url, { width: 240, margin: 1 });
+  return canvas;
+}
+
+// The laptop holds the wallet. The phone holds the tag. The mailbox carries
+// only the signature. A later proof-of-ownership message can arrive the same way.
+async function startHandoff(box) {
+  const ticket = ++handoffTicket;
   const generation = viewGeneration;
-  await stopQr();
+  const to = currentAccount();
+  if (!to) return;
+  const alive = () => ticket === handoffTicket && generation === viewGeneration;
+  const id = newSessionId();
+  const url = handoffUrl(id, to);
+  box.replaceChildren(h("p", {}, "Scan this with your phone, then hold the tag to the phone."));
+  try {
+    box.append(await drawQr(url));
+  } catch (error) {
+    box.append(h("a", { href: url }, url));
+    setStatus(describeError(error));
+  }
+  if (!alive()) return;
+
+  const started = Date.now();
+  while (alive() && Date.now() - started < 5 * 60 * 1000) {
+    try {
+      const message = await getSession(id);
+      if (!alive()) return;
+      if (message) {
+        await receiveClaim(message, to, alive);
+        return;
+      }
+    } catch (error) {
+      if (!alive()) return;
+      setStatus(describeError(error));
+    }
+    await sleep(1000);
+  }
+  if (alive()) setStatus("That code expired. Press Add item for a new one.");
+}
+
+async function receiveClaim(message, to, alive) {
+  setStatus("The phone read a tag. Checking it…");
+  let chipAddress;
+  try {
+    chipAddress = getAddress(message.chip);
+  } catch {
+    setStatus("The phone sent a signature this wallet cannot use.");
+    return;
+  }
+  try {
+    const piece = await pieceForChip({ address: chipAddress });
+    if (!alive()) return;
+    if (!piece) {
+      setStatus("This key is not part of a Mazh collection.");
+      return;
+    }
+    if (piece.holder && piece.holder.toLowerCase() === to.toLowerCase()) {
+      setStatus("This piece is already in your wallet.");
+      return;
+    }
+    const { digest } = await claimDigest({
+      collectionId: piece.collectionId,
+      chipAddress,
+      to,
+      signatureTimestamp: message.signatureTimestamp,
+    });
+    if (!chipSigned(digest, message.signature, chipAddress)) {
+      setStatus("The phone sent a signature this wallet cannot use.");
+      return;
+    }
+    setStatus("Confirm the transaction in MetaMask.");
+    const signed = await signerFor((signer) => contractFor(piece.collectionId, signer));
+    if (!signed) {
+      setStatus("Connect the wallet on this computer.");
+      return;
+    }
+    await submitClaim({
+      signerContract: signed,
+      chipAddress,
+      to,
+      holder: piece.holder,
+      signature: message.signature,
+      signatureTimestamp: message.signatureTimestamp,
+    });
+    if (!alive()) return;
+    setStatus("The piece is in your wallet.");
+    editing = false;
+    render();
+  } catch (error) {
+    const code = error?.code ?? error?.error?.code;
+    setStatus(code === 4001 ? "Claim rejected in MetaMask." : describeError(error));
+  }
+}
+
+async function renderHandoff(id, address) {
+  if (!/^[0-9a-f]{32}$/.test(id)) {
+    view.append(h("p", {}, "That link is not a claim code."));
+    return;
+  }
+  let to;
+  try {
+    to = getAddress(address);
+  } catch {
+    view.append(h("p", {}, "That link is not a claim code."));
+    return;
+  }
+  const found = h("div");
+  const qr = h("div", { id: "qr-reader" });
+  view.append(
+    h("h1", {}, "Add this piece"),
+    h("p", {}, "It will go to"),
+    h("p", { class: "quiet" }, to),
+    h("p", {}, "Hold the tag against the phone."),
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { type: "button", onClick: () => readPieceQr(qr, found, id, to) }, "Scan the piece QR"),
+    ),
+    qr,
+    found,
+  );
+  const generation = viewGeneration;
   await scanChip({
     onStatus: setStatus,
     onKey: (chip) => {
       if (generation !== viewGeneration) return;
-      showScanned(found, chip);
+      offerSend(found, id, to, chip);
     },
   });
 }
 
-async function readQr(qr, found) {
+async function readPieceQr(qr, found, id, to) {
   const generation = viewGeneration;
   await stopQr();
-  setStatus("Allow the camera, then point it at the QR code.");
+  setStatus("Allow the camera, then point it at the QR code on the piece.");
   try {
     qrScanner = await scanQr({
       elementId: "qr-reader",
       onKey: (chip) => {
         if (generation !== viewGeneration) return;
-        showScanned(found, chip);
+        offerSend(found, id, to, chip);
       },
     });
   } catch (error) {
@@ -220,7 +357,8 @@ async function readQr(qr, found) {
   }
 }
 
-async function showScanned(found, chip) {
+async function offerSend(found, id, to, chip) {
+  await stopQr();
   setStatus("Looking up the piece…");
   found.replaceChildren();
   try {
@@ -230,8 +368,9 @@ async function showScanned(found, chip) {
       return;
     }
     setStatus("");
-    const viewer = currentAccount();
-    const actions = scannedItemActions({ holder: piece.holder, viewer });
+    const claim = scannedItemActions({ holder: piece.holder, viewer: to }).find(
+      (action) => action.id === "claim",
+    );
     found.append(
       h(
         "div",
@@ -247,20 +386,13 @@ async function showScanned(found, chip) {
             { class: "quiet" },
             piece.holder ? `Held by ${short(piece.holder)}` : "Unclaimed",
           ),
-          h(
-            "div",
-            { class: "actions" },
-            actions.map((action) =>
-              h(
+          claim
+            ? h(
                 "button",
-                {
-                  type: "button",
-                  onClick: () => runAction(action.id, piece, chip, found),
-                },
-                action.label,
-              ),
-            ),
-          ),
+                { type: "button", onClick: () => sendClaim(id, to, chip, piece, found) },
+                claim.label,
+              )
+            : h("p", {}, "This piece is already in that wallet."),
         ),
       ),
     );
@@ -269,26 +401,24 @@ async function showScanned(found, chip) {
   }
 }
 
-async function runAction(id, piece, chip, found) {
-  if (id !== "claim") return;
-  const viewer = currentAccount();
-  if (!viewer) return;
-  setStatus("Confirm the transaction in MetaMask.");
+async function sendClaim(id, to, chip, piece, found) {
+  setStatus("Sending the scan to the other screen…");
   try {
-    const signed = await signerFor((signer) => contractFor(piece.collectionId, signer));
-    await claimPiece({
-      signerContract: signed,
-      chip,
-      to: viewer,
-      holder: piece.holder,
+    const { digest, signatureTimestamp } = await claimDigest({
+      collectionId: piece.collectionId,
+      chipAddress: chip.address,
+      to,
     });
-    setStatus("The piece is in your wallet.");
+    const signature = await chip.signDigest(digest);
+    await putSession(id, {
+      chip: chip.address,
+      signature,
+      signatureTimestamp: signatureTimestamp.toString(),
+    });
     found.replaceChildren();
-    editing = false;
-    render();
+    setStatus("Sent. Confirm the claim on the other screen.");
   } catch (error) {
-    const code = error?.code ?? error?.error?.code;
-    setStatus(code === 4001 ? "Claim rejected in MetaMask." : describeError(error));
+    setStatus(describeError(error));
   }
 }
 
@@ -381,6 +511,7 @@ function ownedCard(piece, address, owned, mine, isMain) {
 
 async function render() {
   viewGeneration += 1;
+  handoffTicket += 1;
   await stopQr();
   if (route().page !== "collector") editing = false;
   paintAccount();
@@ -390,6 +521,7 @@ async function render() {
   if (current.page === "collection") return renderCollection(current.id);
   if (current.page === "piece") return renderPiece(current.id, current.tokenId);
   if (current.page === "collector") return renderCollector(current.address);
+  if (current.page === "handoff") return renderHandoff(current.id, current.address);
   renderHome();
 }
 
