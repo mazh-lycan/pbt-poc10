@@ -6,9 +6,10 @@ export const config = {
   chainName: "Arbitrum Sepolia",
   explorerUrl: "https://sepolia.arbiscan.io",
 
-  // Only ever used for reads, so a public endpoint is enough. Swap for an
-  // Alchemy or Infura URL if the public one rate-limits during the demo.
-  rpcUrl: "https://arbitrum-sepolia.drpc.org",
+  // Reads only. dRPC's free plan answers a profile load with
+  // "Request timeout on the free plan, please upgrade to paid plan".
+  // This is the public Arbitrum Sepolia endpoint, the same one MetaMask adds.
+  rpcUrl: "https://sepolia-rollup.arbitrum.io/rpc",
 
   // Browsers cannot fetch ipfs:// directly. The public Pinata gateway is the
   // committed default; a dedicated gateway belongs in gitignored config.local.js.
