@@ -1,4 +1,4 @@
-import { chipFromText, textFromNdefRecord } from "./chip.js";
+import { chipFromText, textsFromNdefRecord } from "./chip.js";
 
 // Reads a chip key from a tag. Chrome on Android can read NFC. Everywhere
 // else, the same key is read from a QR code with the camera.
@@ -15,10 +15,21 @@ export async function scanChip({ onStatus, onKey }) {
     const reader = new window.NDEFReader();
     await reader.scan();
     reader.onreading = (event) => {
-      for (const record of event.message.records) {
-        const chip = chipFromText(textFromNdefRecord(record));
-        if (chip) onKey(chip);
+      const records = event.message.records;
+      for (const record of records) {
+        for (const text of textsFromNdefRecord(record)) {
+          const chip = chipFromText(text);
+          if (!chip) continue;
+          onKey(chip);
+          return;
+        }
       }
+      const kinds = records.map((record) => record.recordType || "empty").join(", ");
+      onStatus(
+        kinds
+          ? `The tag was read (${kinds}), but the key was not in it.`
+          : "The tag was read, but it was empty.",
+      );
     };
     reader.onreadingerror = () => onStatus("That tag could not be read. Try the QR code.");
     return "started";
